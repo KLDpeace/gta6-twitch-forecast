@@ -26,9 +26,11 @@ Two alignments make the library comparable to the case at hand:
 The weighted empirical quantiles of the log ratios are then shrunk 10%
 toward their median (the library's spread is a little wider than one
 launch's honest uncertainty), exponentiated, and scaled by the hour-1
-print. If no comparable carries a full release day, the forecast falls
-back to the persistence shape (flat median, slowly widening log spread),
-so the output is always well formed.
+print. A comparable with up to three unsampled hours is kept, its gaps
+filled by log-linear interpolation, rather than dropped. If no comparable
+carries a usable release day, the forecast falls back to the persistence
+shape (flat median, slowly widening log spread), so the output is always
+well formed.
 
 Everything is a deterministic function of the case file: no randomness, no
 network, no clock. On the four practice launches this scores a mean log
@@ -85,8 +87,13 @@ def case_step_hour(day_start: datetime) -> int:
 def comparable_curve(comp: dict):
     """(log-ratio curve of the release day vs its hour 1, step hour, weekday) or None.
 
-    Only comparables whose release day is fully sampled, hour by hour with
-    positive viewers, carry a usable shape; anything else is skipped.
+    A comparable carries a usable shape when its release day is sampled hour
+    by hour. SullyGnome (the case data's source) leaves an hour unsampled
+    now and then, so up to three missing or non-positive hours are filled by
+    log-linear interpolation between the nearest sampled neighbours (an end
+    gap takes the nearest sampled value) instead of dropping the whole
+    launch; the hour-1 anchor itself must be sampled and positive, and a
+    day with more gaps than that is skipped.
     """
     try:
         start = parse_ts(comp["day_start"])
@@ -96,8 +103,21 @@ def comparable_curve(comp: dict):
         day = [by_hour.get(start + timedelta(hours=h)) for h in range(24)]
     except (KeyError, TypeError, ValueError):
         return None
-    if any(v is None or v <= 0 for v in day):
+    day = [v if (v is not None and v > 0) else None for v in day]
+    if day[0] is None:
         return None
+    missing = [h for h, v in enumerate(day) if v is None]
+    if len(missing) > 3:
+        return None
+    for h in missing:
+        lo = next((day[j] for j in range(h - 1, -1, -1) if day[j] is not None), None)
+        hi = next((day[j] for j in range(h + 1, 24) if day[j] is not None), None)
+        if lo is None:
+            day[h] = hi
+        elif hi is None:
+            day[h] = lo
+        else:
+            day[h] = math.exp(0.5 * (math.log(lo) + math.log(hi)))
     log_ratio = [math.log(v / day[0]) for v in day]
     step = None
     best = None
